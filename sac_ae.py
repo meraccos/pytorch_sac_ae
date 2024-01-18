@@ -2,20 +2,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import copy
-import math
+
+from torch.distributions.normal import Normal
 
 import utils
 from encoder import make_encoder
 from decoder import make_decoder
 
 LOG_FREQ = 10000
-
-
-def gaussian_logprob(noise, log_std):
-    """Compute Gaussian log probability."""
-    residual = (-0.5 * noise.pow(2) - log_std).sum(-1, keepdim=True)
-    return residual - 0.5 * np.log(2 * np.pi) * noise.size(-1)
 
 
 def squash(mu, pi, log_pi):
@@ -49,7 +43,7 @@ class Actor(nn.Module):
     """MLP actor network."""
     def __init__(
         self, obs_shape, action_shape, hidden_dim, encoder_type,
-        encoder_feature_dim, log_std_min, log_std_max, num_layers, num_filters
+        encoder_feature_dim, num_layers, num_filters
     ):
         super().__init__()
 
@@ -57,9 +51,6 @@ class Actor(nn.Module):
             encoder_type, obs_shape, encoder_feature_dim, num_layers,
             num_filters
         )
-
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
 
         self.trunk = nn.Sequential(
             nn.Linear(self.encoder.feature_dim, hidden_dim), nn.ReLU(),
@@ -71,32 +62,26 @@ class Actor(nn.Module):
         self.apply(weight_init)
 
     def forward(
-        self, obs, compute_pi=True, compute_log_pi=True, detach_encoder=False
+        self, obs, deterministic=False, detach_encoder=False
     ):
         obs = self.encoder(obs, detach=detach_encoder)
 
         mu, log_std = self.trunk(obs).chunk(2, dim=-1)
 
-        # constrain log_std inside [log_std_min, log_std_max]
+        # constrain log_std inside [-10, 2]
         log_std = torch.tanh(log_std)
-        log_std = self.log_std_min + 0.5 * (
-            self.log_std_max - self.log_std_min
-        ) * (log_std + 1)
+        log_std = -4 + 6 * log_std
+        std = log_std.exp()
 
         self.outputs['mu'] = mu
-        self.outputs['std'] = log_std.exp()
+        self.outputs['std'] = std
 
-        if compute_pi:
-            std = log_std.exp()
-            noise = torch.randn_like(mu)
-            pi = mu + noise * std
+        if not deterministic:
+            dist = Normal(mu, std)
+            pi = dist.rsample()
+            log_pi = dist.log_prob(pi).sum(-1, keepdim=True)
         else:
             pi = None
-            entropy = None
-
-        if compute_log_pi:
-            log_pi = gaussian_logprob(noise, log_std)
-        else:
             log_pi = None
 
         mu, pi, log_pi = squash(mu, pi, log_pi)
@@ -147,12 +132,8 @@ class Critic(nn.Module):
             num_filters
         )
 
-        self.Q1 = QFunction(
-            self.encoder.feature_dim, action_shape[0], hidden_dim
-        )
-        self.Q2 = QFunction(
-            self.encoder.feature_dim, action_shape[0], hidden_dim
-        )
+        self.Q1 = QFunction(self.encoder.feature_dim, action_shape[0], hidden_dim)
+        self.Q2 = QFunction(self.encoder.feature_dim, action_shape[0], hidden_dim)
 
         self.outputs = dict()
         self.apply(weight_init)
@@ -197,8 +178,6 @@ class SacAeAgent(object):
         alpha_beta=0.9,
         actor_lr=1e-3,
         actor_beta=0.9,
-        actor_log_std_min=-10,
-        actor_log_std_max=2,
         actor_update_freq=2,
         critic_lr=1e-3,
         critic_beta=0.9,
@@ -227,9 +206,7 @@ class SacAeAgent(object):
 
         self.actor = Actor(
             obs_shape, action_shape, hidden_dim, encoder_type,
-            encoder_feature_dim, actor_log_std_min, actor_log_std_max,
-            num_layers, num_filters
-        ).to(device)
+            encoder_feature_dim, num_layers, num_filters).to(device)
 
         self.critic = Critic(
             obs_shape, action_shape, hidden_dim, encoder_type,
@@ -299,28 +276,25 @@ class SacAeAgent(object):
     def alpha(self):
         return self.log_alpha.exp()
 
+    @torch.no_grad()
     def select_action(self, obs):
-        with torch.no_grad():
-            obs = torch.FloatTensor(obs).to(self.device)
-            obs = obs.unsqueeze(0)
-            mu, _, _, _ = self.actor(
-                obs, compute_pi=False, compute_log_pi=False
-            )
-            return mu.cpu().data.numpy().flatten()
+        obs = torch.FloatTensor(obs).to(self.device)
+        obs = obs.unsqueeze(0)
+        mu, _, _, _ = self.actor(obs, deterministic=True)
+        return mu.cpu().data.numpy().flatten()
 
+    @torch.no_grad()
     def sample_action(self, obs):
-        with torch.no_grad():
-            obs = torch.FloatTensor(obs).to(self.device)
-            obs = obs.unsqueeze(0)
-            mu, pi, _, _ = self.actor(obs, compute_log_pi=False)
-            return pi.cpu().data.numpy().flatten()
+        obs = torch.FloatTensor(obs).to(self.device)
+        obs = obs.unsqueeze(0)
+        mu, pi, _, _ = self.actor(obs, deterministic=False)
+        return pi.cpu().data.numpy().flatten()
 
     def update_critic(self, obs, action, reward, next_obs, not_done, L, step):
         with torch.no_grad():
             _, policy_action, log_pi, _ = self.actor(next_obs)
             target_Q1, target_Q2 = self.critic_target(next_obs, policy_action)
-            target_V = torch.min(target_Q1,
-                                 target_Q2) - self.alpha.detach() * log_pi
+            target_V = torch.min(target_Q1, target_Q2) - self.alpha.detach() * log_pi
             target_Q = reward + (not_done * self.discount * target_V)
 
         # get current Q estimates

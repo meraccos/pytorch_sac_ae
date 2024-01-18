@@ -1,15 +1,9 @@
-import numpy as np
 import torch
 import argparse
 import os
-import math
-import gym
-import sys
-import random
 import time
 import json
 import dmc2gym
-import copy
 
 import utils
 from logger import Logger
@@ -45,8 +39,6 @@ def parse_args():
     # actor
     parser.add_argument('--actor_lr', default=1e-3, type=float)
     parser.add_argument('--actor_beta', default=0.9, type=float)
-    parser.add_argument('--actor_log_std_min', default=-10, type=float)
-    parser.add_argument('--actor_log_std_max', default=2, type=float)
     parser.add_argument('--actor_update_freq', default=2, type=int)
     # encoder/decoder
     parser.add_argument('--encoder_type', default='pixel', type=str)
@@ -108,8 +100,6 @@ def make_agent(obs_shape, action_shape, args, device):
             alpha_beta=args.alpha_beta,
             actor_lr=args.actor_lr,
             actor_beta=args.actor_beta,
-            actor_log_std_min=args.actor_log_std_min,
-            actor_log_std_max=args.actor_log_std_max,
             actor_update_freq=args.actor_update_freq,
             critic_lr=args.critic_lr,
             critic_beta=args.critic_beta,
