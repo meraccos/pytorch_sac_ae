@@ -277,18 +277,14 @@ class SacAeAgent(object):
         return self.log_alpha.exp()
 
     @torch.no_grad()
-    def select_action(self, obs):
+    def sample_action(self, obs, deterministic):
         obs = torch.FloatTensor(obs).to(self.device)
         obs = obs.unsqueeze(0)
-        mu, _, _, _ = self.actor(obs, deterministic=True)
-        return mu.cpu().data.numpy().flatten()
-
-    @torch.no_grad()
-    def sample_action(self, obs):
-        obs = torch.FloatTensor(obs).to(self.device)
-        obs = obs.unsqueeze(0)
-        mu, pi, _, _ = self.actor(obs, deterministic=False)
-        return pi.cpu().data.numpy().flatten()
+        mu, pi, _, _ = self.actor(obs, deterministic=deterministic)
+        
+        action = mu if deterministic else pi
+        
+        return action.numpy(force=True).flatten()
 
     def update_critic(self, obs, action, reward, next_obs, not_done, L, step):
         with torch.no_grad():

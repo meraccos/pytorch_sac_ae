@@ -21,7 +21,7 @@ def parse_args():
     parser.add_argument('--action_repeat', default=1, type=int)
     parser.add_argument('--frame_stack', default=3, type=int)
     # replay buffer
-    parser.add_argument('--replay_buffer_capacity', default=1000000, type=int)
+    parser.add_argument('--replay_buffer_capacity', default=3000000, type=int)
     # train
     parser.add_argument('--agent', default='sac_ae', type=str)
     parser.add_argument('--init_steps', default=1000, type=int)
@@ -77,7 +77,7 @@ def evaluate(env, agent, video, num_episodes, L, step):
         episode_reward = 0
         while not done:
             with utils.eval_mode(agent):
-                action = agent.select_action(obs)
+                action = agent.sample_action(obs, deterministic=True)
             obs, reward, done, _ = env.step(action)
             video.record(env)
             episode_reward += reward
@@ -207,7 +207,7 @@ def main():
             action = env.action_space.sample()
         else:
             with utils.eval_mode(agent):
-                action = agent.sample_action(obs)
+                action = agent.sample_action(obs, deterministic=False)
 
         # run training update
         if step >= args.init_steps:
